@@ -9,29 +9,57 @@ with the original trip_ids, so it matches the official GTFS-RT live feed. Standa
 
 Data: opentransportdata.swiss (Swiss open data for public transport), used under its terms of use.
 """
-import csv, datetime, io, os, sys, urllib.request, zipfile
+import csv, datetime, io, json, os, sys, urllib.request, zipfile
 
 LONG = {"IC", "ICN", "IR", "EC", "ICE", "TGV", "RJ", "RJX", "NJ", "EN", "PE", "GEX", "BEX", "GPX"}
 OUT = os.path.join(os.path.dirname(__file__), "..", "data", "ch_fv.zip")
+
+
+UA = {"User-Agent": "CosimaTravel-timetable-build/1.0 (+https://cosimatravel.com)"}
+
+
+def fetch(url, timeout=600):
+    with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=timeout) as r:
+        return r.read(), r.geturl(), r.headers.get("content-type", "")
+
+
+def candidate_urls(year):
+    """Ask the portal's catalogue (CKAN) for the dataset's GTFS zip; fall back to the permalink."""
+    urls = []
+    for host in ("https://data.opentransportdata.swiss", "https://opentransportdata.swiss"):
+        api = f"{host}/api/3/action/package_show?id=timetable-{year}-gtfs2020"
+        try:
+            body, _, _ = fetch(api, 60)
+            res = json.loads(body).get("result", {}).get("resources", [])
+            res.sort(key=lambda r: r.get("created") or r.get("last_modified") or "", reverse=True)  # newest first
+            for r in res:
+                u = r.get("url") or ""
+                if u.lower().endswith(".zip") or "zip" in (r.get("format") or "").lower():
+                    urls.append(u)
+            print(f"catalogue {api}: {len(res)} resources, {len(urls)} zip", flush=True)
+            if urls:
+                break
+        except Exception as e:
+            print(f"catalogue {api} failed: {e}", flush=True)
+    urls.append(f"https://data.opentransportdata.swiss/dataset/timetable-{year}-gtfs2020/permalink")
+    return urls
 
 
 def download():
     today = datetime.date.today()
     years = [today.year + 1, today.year] if today.month == 12 else [today.year, today.year + 1]
     for y in years:
-        url = f"https://data.opentransportdata.swiss/dataset/timetable-{y}-gtfs2020/permalink"
-        try:
-            print("downloading", url, flush=True)
-            req = urllib.request.Request(url, headers={"User-Agent": "CosimaTravel-timetable-build/1.0 (+https://cosimatravel.com)"})
-            with urllib.request.urlopen(req, timeout=600) as r:
-                data = r.read()
-            if data[:2] == b"PK":
-                print(f"got {len(data)/1e6:.1f} MB for {y}", flush=True)
-                return data
-            print("not a zip, skipping", flush=True)
-        except Exception as e:  # dataset for that year may not exist yet
-            print("failed:", e, flush=True)
-    sys.exit("could not download the Swiss GTFS")
+        for url in candidate_urls(y):
+            try:
+                print("downloading", url, flush=True)
+                data, final, ctype = fetch(url)
+                if data[:2] == b"PK":
+                    print(f"got {len(data)/1e6:.1f} MB for {y} from {final}", flush=True)
+                    return data
+                print(f"not a zip ({ctype}, {len(data)} bytes, final URL {final}): {data[:200]!r}", flush=True)
+            except Exception as e:  # dataset for that year may not exist yet
+                print("failed:", e, flush=True)
+    sys.exit("could not download the Swiss GTFS -- see the messages above")
 
 
 def rows(z, name):
