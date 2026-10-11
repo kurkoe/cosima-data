@@ -1,4 +1,4 @@
-/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Weekly build of a compact Swiss long-distance timetable for the TravelHub Trains page.
 
